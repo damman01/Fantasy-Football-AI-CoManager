@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fantasy Football | AI CoManager</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap">
+  <script src="/vendor/lucide/lucide.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand">
+      <span class="mark">FF</span>
+      <div>FANTASY FOOTBALL<span>AI CoManager</span></div>
+    </div>
+    <span class="season" id="season">SAISON</span>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">TEAM MANAGEMENT</p>
+        <h1>Mein Spieltag</h1>
+      </div>
+      <div class="toolbar">
+        <label for="league">Liga</label>
+        <select id="league" disabled><option>Laden...</option></select>
+        <button id="refresh" type="button" title="Daten aktualisieren" aria-label="Daten aktualisieren" disabled>
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+    <div class="connections">
+      <span id="server-status">Server wird geprueft</span>
+      <span id="espn-status">ESPN</span>
+      <span id="llm-status">LLM</span>
+      <span id="updated"></span>
+    </div>
+    <p id="message" role="status" aria-live="polite">Ligen werden geladen...</p>
+    <section id="overview" hidden>
+      <div class="team-heading">
+        <div>
+          <p class="eyebrow" id="league-name"></p>
+          <h2 id="team-name"></h2>
+        </div>
+        <div class="metrics">
+          <div><span>WOCHE</span><strong id="week">-</strong></div>
+          <div><span>BILANZ</span><strong id="record">-</strong></div>
+          <div><span>SPIELER</span><strong id="player-count">-</strong></div>
+        </div>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Teamansicht">
+        <button id="roster-tab" role="tab" aria-selected="true" aria-controls="roster-panel">Mein Roster</button>
+        <button id="teams-tab" role="tab" aria-selected="false" aria-controls="teams-panel" tabindex="-1">Liga-Tabelle</button>
+        <button id="waivers-tab" role="tab" aria-selected="false" aria-controls="waivers-panel" tabindex="-1">
+          <span class="tab-badge-wrap">Freie Spieler & MCP <span class="badge-ai">AI</span></span>
+        </button>
+      </div>
+
+      <section id="roster-panel" role="tabpanel" aria-labelledby="roster-tab">
+        <div class="section-heading">
+          <h3>Aufstellung</h3>
+          <label class="search">
+            <span>Spieler suchen</span>
+            <input id="search" type="search" placeholder="Name oder Position" autocomplete="off">
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Slot</th><th>Spieler</th><th>Position</th><th>Status</th></tr>
+            </thead>
+            <tbody id="roster"></tbody>
+          </table>
+        </div>
+        <p id="empty-roster" hidden>Keine Spieler im Roster.</p>
+      </section>
+
+      <section id="teams-panel" role="tabpanel" aria-labelledby="teams-tab" hidden>
+        <div class="section-heading">
+          <h3>Liga-Tabelle</h3>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Team</th><th>W / L</th><th>Punkte</th></tr>
+            </thead>
+            <tbody id="teams"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="waivers-panel" role="tabpanel" aria-labelledby="waivers-tab" hidden>
+        <div class="waiver-briefing" id="waiver-briefing">
+          <div class="briefing-header">
+            <div class="briefing-title">
+              <i data-lucide="sparkles" class="icon-sparkle" aria-hidden="true"></i>
+              <span>MCP & AI Wochen-Briefing <span id="waiver-week-badge" class="week-pill">Woche -</span></span>
+            </div>
+            <span class="urgency-badge" id="waiver-urgency">BERECHNE...</span>
+          </div>
+          <h4 class="briefing-headline" id="waiver-headline">Vorschläge werden ermittelt...</h4>
+          
+          <div class="briefing-alerts" id="waiver-alerts" hidden>
+            <div class="alert-label"><i data-lucide="alert-triangle" aria-hidden="true"></i> Handlungsbedarf im Kader:</div>
+            <div class="alert-chips" id="waiver-alert-list"></div>
+          </div>
+
+          <div class="briefing-content" id="waiver-ai-text"></div>
+
+          <div class="briefing-footer">
+            <div class="briefing-meta">
+              <span id="waiver-source-tag" class="meta-tag">Algorithmus & MCP</span>
+              <span id="waiver-updated-tag" class="meta-tag">Stand: gerade</span>
+            </div>
+            <button id="refresh-waivers-ai" type="button" class="btn-refresh-ai" title="MCP-Analyse mit LLM neu berechnen">
+              <i data-lucide="rotate-cw" aria-hidden="true"></i>
+              <span>MCP-Analyse aktualisieren</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="waiver-controls">
+          <div class="section-heading">
+            <div>
+              <h3>Freie Spieler (Waiver Wire & Free Agents)</h3>
+              <p class="subtext">Passende Verstärkungen nach Bedarf, Projektion für diese Woche und FAAB-Empfehlung</p>
+            </div>
+            <label class="search">
+              <span>Spieler suchen</span>
+              <input id="waiver-search" type="search" placeholder="Name oder Team suchen..." autocomplete="off">
+            </label>
+          </div>
+          <div class="position-chips" id="position-chips" role="group" aria-label="Positionsfilter">
+            <button type="button" class="chip active" data-pos="ALL">Alle Positionen</button>
+            <button type="button" class="chip" data-pos="QB">QB</button>
+            <button type="button" class="chip" data-pos="RB">RB</button>
+            <button type="button" class="chip" data-pos="WR">WR</button>
+            <button type="button" class="chip" data-pos="TE">TE</button>
+            <button type="button" class="chip" data-pos="K">K</button>
+            <button type="button" class="chip" data-pos="D/ST">D/ST</button>
+            <button type="button" class="chip" data-pos="DEF">IDP / DEF</button>
+          </div>
+        </div>
+
+        <div class="waiver-grid" id="waiver-grid"></div>
+        <p id="empty-waivers" class="empty-state" hidden>Keine passenden freien Spieler gefunden.</p>
+
+        <div class="drop-section" id="drop-section">
+          <div class="section-heading">
+            <div>
+              <h4>Empfohlene Drop-Kandidaten (Eigene Bank)</h4>
+              <p class="subtext">Spieler auf deiner Bank, die du für einen Waiver-Zugang sicher entlassen kannst</p>
+            </div>
+          </div>
+          <div class="drop-grid" id="drop-grid"></div>
+        </div>
+      </section>
+    </section>
+    <footer>
+      <span>ESPN Fantasy Football AI CoManager</span>
+      <span>Model Context Protocol (MCP) & Gemini Intelligence</span>
+    </footer>
+  </main>
+</body>
+</html>

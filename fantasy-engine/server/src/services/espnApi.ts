@@ -21,6 +21,7 @@ export class ESPNApiService {
   constructor() {
     this.axios = axios.create({
       baseURL: this.baseURL,
+      timeout: 15000,
       headers: {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
@@ -44,6 +45,71 @@ export class ESPNApiService {
 
   getCookies(): ESPNCookies | null {
     return this.cookies;
+  }
+
+  async getDashboard(leagueId: string) {
+    const params = new URLSearchParams();
+    for (const view of ['mSettings', 'mTeam', 'mRoster']) params.append('view', view);
+    const response = await this.axios.get(
+      `/seasons/${getCurrentNFLSeasonYear()}/segments/0/leagues/${leagueId}`,
+      { params }
+    );
+    if (!response.data || typeof response.data !== 'object' || !Array.isArray(response.data.teams)) {
+      throw new Error('Invalid ESPN response');
+    }
+    return response.data;
+  }
+
+  async getAvailablePlayers(leagueId: string, scoringPeriodId?: number) {
+    const year = getCurrentNFLSeasonYear();
+    const params = new URLSearchParams();
+    params.append('view', 'kona_player_info');
+    if (scoringPeriodId) params.append('scoringPeriodId', String(scoringPeriodId));
+
+    const filterHeader = JSON.stringify({
+      players: {
+        filterStatus: {
+          value: ['FREEAGENT', 'WAIVERS']
+        },
+        limit: 150,
+        sortPercOwned: {
+          sortAsc: false,
+          sortPriority: 1
+        }
+      }
+    });
+
+    try {
+      const response = await this.axios.get(
+        `/seasons/${year}/segments/0/leagues/${leagueId}`,
+        {
+          params,
+          headers: {
+            'X-Fantasy-Filter': filterHeader
+          }
+        }
+      );
+      if (response.data && Array.isArray(response.data.players)) {
+        return response.data.players;
+      }
+      return [];
+    } catch (error: any) {
+      console.warn('Filter query failed, falling back to unfiltered request:', error.message);
+      try {
+        const fallback = await this.axios.get(
+          `/seasons/${year}/segments/0/leagues/${leagueId}`,
+          { params }
+        );
+        const players = fallback.data?.players || [];
+        return players.filter((p: any) => {
+          const status = p.status;
+          const pct = p.player?.ownership?.percentOwned ?? 0;
+          return status === 'FREEAGENT' || status === 'WAIVERS' || pct < 75;
+        });
+      } catch (fallbackError: any) {
+        throw new Error(`Konnte verfügbare Spieler nicht laden: ${fallbackError.message}`);
+      }
+    }
   }
 
   async getLeagueInfo(leagueId: string, year: number = getCurrentNFLSeasonYear()) {
