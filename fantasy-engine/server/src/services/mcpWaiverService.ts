@@ -60,6 +60,8 @@ interface RosterPlayerItem {
   isBench: boolean;
   injury: string;
   projectedPoints: number;
+  actualPoints: number | null;
+  hasPlayed: boolean;
   percentOwned: number;
   percentStarted: number;
 }
@@ -187,7 +189,11 @@ export class MCPWaiverService {
       const slot = slotsMap[slotId] || '-';
       const injury = p.injuryStatus || 'ACTIVE';
       const stats = p.stats || [];
+      const actualStat = stats.find((s: any) => s.statSourceId === 0 && s.scoringPeriodId === week);
       const proj = this.extractProjectedPoints(stats, week);
+      const actual = actualStat && typeof actualStat.appliedTotal === 'number'
+        ? Math.round(actualStat.appliedTotal * 10) / 10
+        : null;
       const isBench = slot === 'BN' || slot === 'IR';
 
       return {
@@ -198,6 +204,8 @@ export class MCPWaiverService {
         isBench,
         injury,
         projectedPoints: proj,
+        actualPoints: actual,
+        hasPlayed: actualStat != null,
         percentOwned: p.ownership?.percentOwned ?? 0,
         percentStarted: p.ownership?.percentStarted ?? 0
       };
@@ -213,17 +221,26 @@ export class MCPWaiverService {
 
     const dropCandidates: DropCandidate[] = bench
       .filter((p: RosterPlayerItem) => p.slot !== 'IR') // Keep actual IR slots
-      .map((p: RosterPlayerItem): DropCandidate => {
+      .map((p: RosterPlayerItem) => {
         let reason = 'Bankspieler';
-        if (p.injury && !['ACTIVE', 'NORMAL'].includes(p.injury.toUpperCase())) {
-          reason = `Verletzt / Fraglich (${p.injury}) mit wenig Perspektive`;
-        } else if (p.projectedPoints < 4) {
-          reason = `Sehr geringe Projektion (${p.projectedPoints} Pkt)`;
-        } else if (p.percentStarted < 10) {
-          reason = `Geringe Start-Quote (${p.percentStarted}%)`;
+        const points = p.actualPoints != null && p.actualPoints > 0 ? p.actualPoints : p.projectedPoints;
+        let dropScore = (p.percentOwned || 0) * 0.4 + points * 2;
+
+        if (p.injury && ['OUT', 'IR'].includes(p.injury.toUpperCase())) {
+          reason = `Verletzt (${p.injury}), blockiert Bankplatz`;
+          dropScore -= 20;
+        } else if (p.injury && !['ACTIVE', 'NORMAL'].includes(p.injury.toUpperCase())) {
+          reason = `Angeschlagen (${p.injury})`;
+          dropScore -= 8;
+        } else if (p.percentOwned < 15) {
+          reason = `Geringer Liga-Besitz (${p.percentOwned}%), leicht ersetzbar`;
+          dropScore -= 10;
+        } else if (p.projectedPoints < 5 && (!p.actualPoints || p.actualPoints < 5)) {
+          reason = `Geringe Produktion (${p.projectedPoints} Proj. Pkt)`;
         } else {
-          reason = `Niedrige Prio auf der Bank (${p.projectedPoints} Pkt)`;
+          reason = `Rolle als Backup (${p.position})`;
         }
+
         return {
           id: p.id,
           name: p.name,
@@ -231,11 +248,15 @@ export class MCPWaiverService {
           slot: p.slot,
           injury: p.injury,
           projectedPoints: p.projectedPoints,
+          actualPoints: p.actualPoints,
+          hasPlayed: p.hasPlayed,
+          dropScore,
           reason
         };
       })
-      .sort((a: DropCandidate, b: DropCandidate) => a.projectedPoints - b.projectedPoints)
-      .slice(0, 5);
+      .sort((a, b) => a.dropScore - b.dropScore)
+      .slice(0, 5)
+      .map(({ dropScore, ...rest }) => rest);
 
     // 4. Fetch available players from ESPN
     const rawAvailable = await this.espn.getAvailablePlayers(leagueId, week);
@@ -272,66 +293,79 @@ export class MCPWaiverService {
         }
       }
 
-      // Calculate priority score
-      let priority = Math.round(proj * 1.5);
+      // Calculate priority score (balancing projections, live results, and team needs)
+      let priority = 0;
       const reasons: string[] = [];
 
-      // Scoring factors
-      if (proj >= 11) {
-        priority += 6;
-        reasons.push(`Starke Wochenprojektion: ${proj} Pkt`);
-      } else if (proj >= 8) {
-        priority += 3;
-        reasons.push(`Solide Projektion: ${proj} Pkt`);
+      if (actual > 0) {
+        // Player has played and produced points in the current week
+        if (actual >= 15) {
+          priority += 18;
+          reasons.push(`Top-Spieltag in Woche ${week}: ${actual} Pkt erzielt!`);
+        } else if (actual >= 10) {
+          priority += 12;
+          reasons.push(`Starke Ausbeute in Woche ${week}: ${actual} Pkt`);
+        } else if (actual >= 6) {
+          priority += 7;
+          reasons.push(`Guter Spieltag (Woche ${week}): ${actual} Pkt`);
+        } else {
+          priority += 2;
+          reasons.push(`Bereits gespielt (${actual} Pkt)`);
+        }
+      } else {
+        // Player has not yet played in the current week
+        if (proj >= 13) {
+          priority += 14;
+          reasons.push(`Starke Wochenprojektion: ${proj} Pkt`);
+        } else if (proj >= 9) {
+          priority += 9;
+          reasons.push(`Solide Projektion: ${proj} Pkt`);
+        } else if (proj >= 5) {
+          priority += 5;
+          reasons.push(`Projektion: ${proj} Pkt`);
+        } else {
+          priority += Math.max(1, Math.round(proj));
+        }
       }
 
       // Rising usage
-      if (pctStarted > pctOwned - 15 && pctOwned > 5) {
+      if (pctStarted > 25) {
         priority += 4;
-        reasons.push(`Steigender Trend (${pctStarted}% gestartet)`);
+        reasons.push(`Hoher Starter-Anteil (${pctStarted}% gestartet)`);
+      } else if (pctStarted > pctOwned - 10 && pctOwned > 10) {
+        priority += 2;
+        reasons.push(`Steigender Trend`);
       }
 
-      // Sleeper bonus (low owned, good projection)
-      if (pctOwned < 35 && proj >= 7) {
-        priority += 5;
+      // Sleeper bonus (low owned, good projection or breakout)
+      if (pctOwned < 30 && (proj >= 7 || actual >= 7)) {
+        priority += 3;
         reasons.push(`Geheimtipp (nur ${pctOwned}% im Besitz)`);
       }
 
-      // Positional scarcity
-      if (['RB', 'TE'].includes(pos) && proj >= 6) {
+      // Positional scarcity (RB/TE/QB)
+      if (['RB', 'TE'].includes(pos) && (proj >= 6 || actual >= 6)) {
         priority += 3;
         reasons.push(`Knappe Position: ${pos}`);
       }
 
       // Positional team need
       if (injuredPositions.has(pos)) {
-        priority += 8;
+        priority += 7;
         const matchingStarter = injuredStarters.find((s: RosterPlayerItem) => s.position === pos);
-        reasons.push(`Direkter Ersatz für ${matchingStarter ? matchingStarter.name : 'Verletzung'} (${pos})`);
+        reasons.push(`Bedarf: Direkter Ersatz für ${matchingStarter ? matchingStarter.name : 'Verletzung'} (${pos})`);
       }
 
-      // Suggested FAAB
-      let suggestedFaab = 1;
-      let priorityLabel: WaiverTarget['priorityLabel'] = 'Kader-Tiefe';
-
-      if (priority >= 20) {
-        suggestedFaab = Math.min(30, Math.max(15, Math.floor(proj * 1.6)));
-        priorityLabel = 'Höchste Priorität';
-      } else if (priority >= 14) {
-        suggestedFaab = Math.min(18, Math.max(8, Math.floor(proj * 1.1)));
-        priorityLabel = 'Hohe Priorität';
-      } else if (priority >= 9) {
-        suggestedFaab = Math.min(10, Math.max(4, Math.floor(proj * 0.7)));
-        priorityLabel = pctOwned < 30 ? 'Geheimtipp / Sleeper' : 'Solider Starter';
+      // Match best drop candidate from bench (position aware)
+      let bestDrop: DropCandidate | undefined;
+      if (pos === 'K') {
+        bestDrop = dropCandidates.find(d => d.position === 'K');
+      } else if (['D/ST', 'DST'].includes(pos)) {
+        bestDrop = dropCandidates.find(d => ['D/ST', 'DST'].includes(d.position));
+      } else if (['DT', 'DE', 'LB', 'DL', 'CB', 'S', 'DB', 'DP'].includes(pos)) {
+        bestDrop = dropCandidates.find(d => ['DT', 'DE', 'LB', 'DL', 'CB', 'S', 'DB', 'DP'].includes(d.position)) || dropCandidates[0];
       } else {
-        suggestedFaab = Math.max(1, Math.floor(proj * 0.4));
-        priorityLabel = 'Kader-Tiefe';
-      }
-
-      // Match best drop candidate from bench
-      let bestDrop = dropCandidates.find((d: DropCandidate) => d.position === pos);
-      if (!bestDrop && dropCandidates.length > 0) {
-        bestDrop = dropCandidates[0];
+        bestDrop = dropCandidates.find(d => d.position === pos) || dropCandidates.find(d => !['K', 'D/ST', 'DST'].includes(d.position)) || dropCandidates[0];
       }
 
       scoredTargets.push({
@@ -345,8 +379,8 @@ export class MCPWaiverService {
         percentOwned: pctOwned,
         percentStarted: pctStarted,
         priority,
-        priorityLabel,
-        suggestedFaab,
+        priorityLabel: 'Kader-Tiefe',
+        suggestedFaab: 1,
         reasons,
         suggestedDrop: bestDrop
           ? {
@@ -359,9 +393,63 @@ export class MCPWaiverService {
       });
     }
 
-    // Sort by priority descending
-    scoredTargets.sort((a: WaiverTarget, b: WaiverTarget) => b.priority - a.priority || b.projectedPoints - a.projectedPoints);
+    // Sort by priority descending, breaking ties with actual and projected points
+    scoredTargets.sort((a: WaiverTarget, b: WaiverTarget) =>
+      b.priority - a.priority ||
+      (b.actualPoints || 0) - (a.actualPoints || 0) ||
+      b.projectedPoints - a.projectedPoints
+    );
+
+    // Differentiate Priority Labels based on relative rank and performance
+    scoredTargets.forEach((target, index) => {
+      const bestScore = target.actualPoints && target.actualPoints > 0 ? target.actualPoints : target.projectedPoints;
+      if (index <= 1 || (index === 2 && target.priority >= 18)) {
+        target.priorityLabel = 'Höchste Priorität';
+        target.suggestedFaab = Math.min(30, Math.max(12, Math.floor(bestScore * 1.5)));
+      } else if (index <= 5) {
+        target.priorityLabel = 'Hohe Priorität';
+        target.suggestedFaab = Math.min(18, Math.max(6, Math.floor(bestScore * 1.0)));
+      } else if (index <= 14) {
+        if (target.percentOwned < 30) {
+          target.priorityLabel = 'Geheimtipp / Sleeper';
+          target.suggestedFaab = Math.min(8, Math.max(2, Math.floor(target.projectedPoints * 0.6)));
+        } else {
+          target.priorityLabel = 'Solider Starter';
+          target.suggestedFaab = Math.min(10, Math.max(4, Math.floor(target.projectedPoints * 0.7)));
+        }
+      } else {
+        target.priorityLabel = 'Kader-Tiefe';
+        target.suggestedFaab = Math.max(1, Math.floor(target.projectedPoints * 0.3));
+      }
+    });
+
     const topTargets = scoredTargets.slice(0, maxResults);
+
+    // Extract current matchup details for context
+    const currentMatch = dashboard.schedule?.find((s: any) =>
+      s.matchupPeriodId === week &&
+      (String(s.away?.teamId) === String(teamId) || String(s.home?.teamId) === String(teamId))
+    );
+
+    let matchupContext: { opponentName: string; teamScore: number; opponentScore: number; winProbability: number | null } | undefined;
+    if (currentMatch) {
+      const isHome = String(currentMatch.home?.teamId) === String(teamId);
+      const myMatch = isHome ? currentMatch.home : currentMatch.away;
+      const oppMatch = isHome ? currentMatch.away : currentMatch.home;
+      const oppTeam = dashboard.teams?.find((t: any) => t.id === oppMatch?.teamId);
+      const oppName = oppTeam ? (oppTeam.name || [oppTeam.location, oppTeam.nickname].filter(Boolean).join(' ') || `Team ${oppTeam.id}`) : 'Gegner';
+
+      const teamScore = myMatch?.totalPointsLive ?? myMatch?.pointsByScoringPeriod?.[week] ?? 0;
+      const opponentScore = oppMatch?.totalPointsLive ?? oppMatch?.pointsByScoringPeriod?.[week] ?? 0;
+      const winProbability = myMatch?.winProbability != null ? Math.round(myMatch.winProbability * 100) : null;
+
+      matchupContext = {
+        opponentName: oppName,
+        teamScore: Math.round(teamScore * 10) / 10,
+        opponentScore: Math.round(opponentScore * 10) / 10,
+        winProbability
+      };
+    }
 
     // 6. Generate AI briefing (using Gemini if key available, fallback algorithmic)
     const aiBriefing = await this.generateAIBriefing({
@@ -370,6 +458,8 @@ export class MCPWaiverService {
       teamName,
       wins: team.record?.overall?.wins ?? 0,
       losses: team.record?.overall?.losses ?? 0,
+      matchupContext,
+      starters,
       injuredStarters,
       dropCandidates,
       topTargets: topTargets.slice(0, 8)
@@ -394,11 +484,18 @@ export class MCPWaiverService {
     teamName: string;
     wins: number;
     losses: number;
+    matchupContext?: {
+      opponentName: string;
+      teamScore: number;
+      opponentScore: number;
+      winProbability: number | null;
+    };
+    starters: RosterPlayerItem[];
     injuredStarters: Array<{ name: string; position: string; injury: string }>;
     dropCandidates: DropCandidate[];
     topTargets: WaiverTarget[];
   }): Promise<WaiverAnalysisResult['aiBriefing']> {
-    const { week, season, teamName, wins, losses, injuredStarters, dropCandidates, topTargets } = context;
+    const { week, season, teamName, wins, losses, matchupContext, starters, injuredStarters, dropCandidates, topTargets } = context;
 
     const urgency: 'HOCH' | 'MITTEL' | 'NORMAL' =
       injuredStarters.length >= 2 ? 'HOCH' : injuredStarters.length === 1 ? 'MITTEL' : 'NORMAL';
@@ -409,6 +506,9 @@ export class MCPWaiverService {
       status: s.injury || 'QUESTIONABLE'
     }));
 
+    const playedStarters = starters.filter(s => s.hasPlayed);
+    const pendingStarters = starters.filter(s => !s.hasPlayed);
+
     const geminiKey = process.env.GEMINI_API_KEY;
     const model = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
 
@@ -416,21 +516,26 @@ export class MCPWaiverService {
       try {
         const prompt = `Du bist ein erfahrener ESPN Fantasy Football AI Co-Manager für Saison ${season}, Woche ${week}.
 Team: "${teamName}" (${wins} Siege - ${losses} Niederlagen).
+${matchupContext ? `Aktueller Matchup-Spielstand (Woche ${week}): ${teamName} (${matchupContext.teamScore} Pkt) vs. ${matchupContext.opponentName} (${matchupContext.opponentScore} Pkt) | Sieg-Chance: ${matchupContext.winProbability != null ? matchupContext.winProbability + '%' : 'offen'}` : ''}
 
-Angeschlagene/fragliche Starter im Team:
-${injuredStarters.length > 0 ? injuredStarters.map((s: { name: string; position: string; injury: string }) => `- ${s.name} (${s.position}, Status: ${s.injury})`).join('\n') : '- Keine verletzten Starter'}
+Bereits gespielte Starter (Woche ${week}):
+${playedStarters.length > 0 ? playedStarters.map(s => `- ${s.name} (${s.position}): ${s.actualPoints} Punkte erzielt`).join('\n') : '- Noch keine Starter mit beendetem Spiel'}
 
-Top freie Spieler auf dem Waiver Wire:
-${topTargets.map((t: WaiverTarget) => `- ${t.name} (${t.position}, ${t.team}): ${t.projectedPoints} Pkt projiziert, ${t.percentOwned}% im Besitz. Gründe: ${t.reasons.join(', ')}`).join('\n')}
+Noch ausstehende Starter:
+${pendingStarters.length > 0 ? pendingStarters.map(s => `- ${s.name} (${s.position}): Proj. ${s.projectedPoints} Pkt, Status: ${s.injury}`).join('\n') : '- Alle Starter haben bereits gespielt'}
+
+Top freie Spieler auf dem Waiver Wire (differenziert nach Priorität):
+${topTargets.map((t: WaiverTarget, i: number) => `- [#${i+1} | ${t.priorityLabel}] ${t.name} (${t.position}, ${t.team}): ${t.actualPoints && t.actualPoints > 0 ? t.actualPoints + ' Pkt in W' + week + ' erzielt' : t.projectedPoints + ' Pkt projiziert'}, ${t.percentOwned}% im Besitz. Gründe: ${t.reasons.join(', ')} (FAAB: ${t.suggestedFaab}$)`).join('\n')}
 
 Mögliche Drop-Kandidaten von der Bank:
 ${dropCandidates.map((d: DropCandidate) => `- ${d.name} (${d.position}, ${d.slot}): ${d.reason}`).join('\n')}
 
 Erstelle ein prägnantes, professionelles Wochen-Briefing auf Deutsch:
-1. Schlagzeile (1 Satz zur Wochenlage)
-2. Wichtigste 2-3 Pickups für diese Woche und warum sie genau jetzt helfen
-3. Konkreter Drop-Ratschlag (wer kann ohne Reue gehen)
-4. FAAB-Empfehlung`;
+1. Schlagzeile (1 prägnanter Satz zum Spieltag und aktuellen Matchup-Stand)
+2. Matchup-Einschätzung & bereits erbrachte Leistungen der Starter
+3. Wichtigste 1-2 Pickups für die kommende Waiver-Periode (unter Beachtung der Prioritätsstufen)
+4. Konkreter Drop-Ratschlag (wer kann ohne Reue gehen, falls nötig)
+5. FAAB-Empfehlung`;
 
         const response = await axios.post(
           `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${geminiKey}`,
@@ -454,26 +559,63 @@ Erstelle ein prägnantes, professionelles Wochen-Briefing auf Deutsch:
         const text = candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (text && text.trim().length > 30) {
-          const lines = text.split('\n').filter((l: string) => l.trim().length > 0);
-          const headline = lines[0].replace(/^#+\s*|\*+/g, '').trim();
+          const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+
+          let extractedHeadline = '';
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (/Schlagzeile/i.test(line)) {
+              const afterColon = line.split(/Schlagzeile:?/i)[1];
+              if (afterColon && afterColon.replace(/[*#_]/g, '').trim().length > 10) {
+                extractedHeadline = afterColon;
+                break;
+              }
+              if (i + 1 < lines.length && !lines[i + 1].startsWith('#')) {
+                extractedHeadline = lines[i + 1];
+                break;
+              }
+            }
+          }
+
+          if (!extractedHeadline) {
+            for (const line of lines) {
+              if (!line.startsWith('---') && !/^hier ist/i.test(line) && !/^guten/i.test(line) && !line.startsWith('#')) {
+                extractedHeadline = line;
+                break;
+              }
+            }
+          }
+
+          const cleanHeadline = (extractedHeadline || lines[0] || '')
+            .replace(/^#+\s*|\*+/g, '')
+            .replace(/^_+\s*|_+\s*$/g, '')
+            .trim();
+
+          const headline = cleanHeadline.length > 10
+            ? cleanHeadline
+            : `Woche ${week} Matchup & Waiver: ${matchupContext ? `${matchupContext.teamScore} - ${matchupContext.opponentScore} Pkt` : 'Kader optimieren'}`;
 
           const keyAdvice: string[] = [];
           for (const line of lines.slice(1)) {
             const clean = line.replace(/^[-*•\d.]\s*|\*+/g, '').trim();
-            if (clean.length > 15 && keyAdvice.length < 4) {
+            if (clean.length > 15 && keyAdvice.length < 4 && !clean.toLowerCase().includes('schlagzeile')) {
               keyAdvice.push(clean);
             }
           }
 
+          const cleanedText = text
+            .replace(/^Hier ist (?:dein|Ihr)[^\n]+\n*(?:---\n*)?/i, '')
+            .trim();
+
           return {
             urgency,
-            headline: headline.length > 10 ? headline : `Woche ${week} Waiver-Fokus: ${urgency === 'HOCH' ? 'Verletzungen absichern' : 'Kader optimieren'}`,
+            headline,
             injuredStarters: injuredList,
             keyAdvice: keyAdvice.length > 0 ? keyAdvice : [
-              topTargets[0] ? `Top-Claim: ${topTargets[0].name} (${topTargets[0].position}) für ${topTargets[0].suggestedFaab}$ FAAB priorisieren.` : 'Verfügbare Optionen prüfen.',
+              topTargets[0] ? `Top-Claim [${topTargets[0].priorityLabel}]: ${topTargets[0].name} (${topTargets[0].position}) für ${topTargets[0].suggestedFaab}$ FAAB priorisieren.` : 'Verfügbare Optionen prüfen.',
               dropCandidates[0] ? `Als Drop bietet sich ${dropCandidates[0].name} (${dropCandidates[0].position}) an.` : 'Bankplätze analysieren.'
             ],
-            fullAnalysis: text,
+            fullAnalysis: cleanedText || text,
             source: 'gemini'
           };
         }
@@ -486,32 +628,37 @@ Erstelle ein prägnantes, professionelles Wochen-Briefing auf Deutsch:
     const topPick = topTargets[0];
     const topDrop = dropCandidates[0];
 
-    const headline = urgency === 'HOCH'
+    const headline = matchupContext
+      ? `Woche ${week}: ${teamName} (${matchupContext.teamScore}) vs. ${matchupContext.opponentName} (${matchupContext.opponentScore})${matchupContext.winProbability != null ? ` – Sieg-Chance ${matchupContext.winProbability}%` : ''}`
+      : urgency === 'HOCH'
       ? `Woche ${week}: ${injuredStarters.length} Starter fraglich – Sofortige Absicherung empfohlen!`
-      : urgency === 'MITTEL'
-      ? `Woche ${week}: ${injuredStarters[0]?.name} (${injuredStarters[0]?.position}) ist fraglich – Tiefe verstärken.`
       : `Woche ${week}: Solide Kaderlage – Gezielte Verstärkung über Waiver Wire nutzen.`;
 
     const keyAdvice: string[] = [];
-    if (topPick) {
-      keyAdvice.push(`Priorität 1: ${topPick.name} (${topPick.position}, ${topPick.team}) mit ${topPick.projectedPoints} projizierten Punkten.`);
+    if (playedStarters.length > 0) {
+      const topScorer = [...playedStarters].sort((a, b) => (b.actualPoints || 0) - (a.actualPoints || 0))[0];
+      if (topScorer && (topScorer.actualPoints || 0) > 0) {
+        keyAdvice.push(`Bester Starter der Woche: ${topScorer.name} (${topScorer.position}) mit ${topScorer.actualPoints} Punkten.`);
+      }
     }
-    if (injuredStarters.length > 0) {
-      const positions = [...new Set(injuredStarters.map((s: { name: string; position: string; injury: string }) => s.position))].join(', ');
-      keyAdvice.push(`Fokus auf Positionen mit Ausfällen: ${positions}.`);
+    if (topPick) {
+      const bestPt = topPick.actualPoints && topPick.actualPoints > 0 ? `${topPick.actualPoints} Pkt erzielt` : `${topPick.projectedPoints} Proj. Pkt`;
+      keyAdvice.push(`Priorität 1 [${topPick.priorityLabel}]: ${topPick.name} (${topPick.position}, ${topPick.team}) mit ${bestPt}.`);
     }
     if (topDrop) {
-      keyAdvice.push(`Empfohlener Drop: ${topDrop.name} (${topDrop.position}) von der Bank entlassen.`);
+      keyAdvice.push(`Empfohlener Drop: ${topDrop.name} (${topDrop.position}) von der Bank entlassen (${topDrop.reason}).`);
     }
     if (topPick) {
-      keyAdvice.push(`Empfohlenes FAAB-Gebot für ${topPick.name}: ca. ${topPick.suggestedFaab}$ (Budget schonen für die Playoffs).`);
+      keyAdvice.push(`Empfohlenes FAAB-Gebot für ${topPick.name}: ca. ${topPick.suggestedFaab}$ FAAB.`);
     }
 
     const fullAnalysis = `### MCP Wochen-Analyse für Woche ${week}
 **Lage:** ${headline}
 
+**Matchup-Status:** ${matchupContext ? `${matchupContext.teamScore} : ${matchupContext.opponentScore} vs. ${matchupContext.opponentName} (Sieg-Wahrscheinlichkeit: ${matchupContext.winProbability ?? '-'}%)` : 'Kein Live-Matchup verfügbar'}
+
 **Top-Empfehlungen:**
-${topTargets.slice(0, 3).map((t: WaiverTarget, idx: number) => `${idx + 1}. **${t.name}** (${t.position}, ${t.team}): ${t.projectedPoints} Pkt - ${t.reasons.join('; ')} (FAAB: ca. ${t.suggestedFaab}$)`).join('\n')}
+${topTargets.slice(0, 3).map((t: WaiverTarget, idx: number) => `${idx + 1}. [${t.priorityLabel}] **${t.name}** (${t.position}, ${t.team}): ${t.actualPoints && t.actualPoints > 0 ? `${t.actualPoints} Pkt erzielt` : `${t.projectedPoints} Proj. Pkt`} - ${t.reasons.join('; ')} (FAAB: ca. ${t.suggestedFaab}$)`).join('\n')}
 
 **Drop-Kandidat:**
 ${topDrop ? `- **${topDrop.name}** (${topDrop.position}): ${topDrop.reason}` : '- Keine zwingenden Drops nötig.'}`;

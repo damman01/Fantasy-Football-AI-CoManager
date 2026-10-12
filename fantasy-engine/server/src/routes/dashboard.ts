@@ -44,11 +44,42 @@ router.get('/league/:key', async (req, res) => {
     const team = data.teams.find((item: any) => String(item.id) === league.teamId);
     if (!team) { res.status(404).json({ error: 'Das konfigurierte Team wurde in dieser Liga nicht gefunden.' }); return; }
     const teamName = (item: any) => item.name || [item.location, item.nickname].filter(Boolean).join(' ') || `Team ${item.id}`;
+    const currentWeek = data.scoringPeriodId || 1;
+    const match = data.schedule?.find((s: any) =>
+      s.matchupPeriodId === currentWeek &&
+      (String(s.away?.teamId) === league.teamId || String(s.home?.teamId) === league.teamId)
+    );
+
+    let matchup = null;
+    if (match) {
+      const isHome = String(match.home?.teamId) === league.teamId;
+      const myTeamMatch = isHome ? match.home : match.away;
+      const oppTeamMatch = isHome ? match.away : match.home;
+      const oppTeamObj = data.teams.find((t: any) => t.id === oppTeamMatch?.teamId);
+
+      const teamScore = myTeamMatch?.totalPointsLive ?? myTeamMatch?.pointsByScoringPeriod?.[currentWeek] ?? 0;
+      const opponentScore = oppTeamMatch?.totalPointsLive ?? oppTeamMatch?.pointsByScoringPeriod?.[currentWeek] ?? 0;
+      const teamProjected = myTeamMatch?.totalProjectedPointsLive ?? myTeamMatch?.totalProjectedPoints ?? 0;
+      const opponentProjected = oppTeamMatch?.totalProjectedPointsLive ?? oppTeamMatch?.totalProjectedPoints ?? 0;
+      const winProbability = myTeamMatch?.winProbability != null ? Math.round(myTeamMatch.winProbability * 100) : null;
+
+      matchup = {
+        week: currentWeek,
+        opponentName: oppTeamObj ? teamName(oppTeamObj) : `Team ${oppTeamMatch?.teamId}`,
+        teamScore: Math.round(teamScore * 10) / 10,
+        opponentScore: Math.round(opponentScore * 10) / 10,
+        teamProjected: Math.round(teamProjected * 10) / 10,
+        opponentProjected: Math.round(opponentProjected * 10) / 10,
+        winProbability
+      };
+    }
+
     const result = {
       name: data.settings?.name || league.name,
       season: data.seasonId || getCurrentNFLSeasonYear(),
-      week: data.scoringPeriodId,
+      week: currentWeek,
       updatedAt: new Date().toISOString(),
+      matchup,
       team: { name: teamName(team), wins: team.record?.overall?.wins ?? 0, losses: team.record?.overall?.losses ?? 0, ties: team.record?.overall?.ties ?? 0 },
       roster: [...(team.roster?.entries || [])].sort((first: any, second: any) => {
         const order = (slot: number) => slot === 20 ? 100 : slot === 21 ? 101 : slot;
@@ -56,7 +87,29 @@ router.get('/league/:key', async (req, res) => {
       }).map((entry: any) => {
         const player = entry.playerPoolEntry?.player || {};
         const defensiveSlot = player.eligibleSlots?.find((slot: number) => slot >= 8 && slot <= 15);
-        return { id: player.id || entry.playerId, name: player.fullName || 'Unbekannt', position: positions[player.defaultPositionId] || slots[defensiveSlot] || '-', slot: slots[entry.lineupSlotId] || '-', injury: player.injuryStatus || 'ACTIVE', image: player.id && player.defaultPositionId !== 16 ? `https://a.espncdn.com/i/headshots/nfl/players/full/${player.id}.png` : null };
+        const stats = player.stats || [];
+        const actualStat = stats.find((s: any) => s.statSourceId === 0 && s.scoringPeriodId === currentWeek);
+        const projStat = stats.find((s: any) => s.statSourceId === 1 && s.scoringPeriodId === currentWeek);
+
+        const hasPlayed = actualStat != null;
+        const actualPoints = actualStat && typeof actualStat.appliedTotal === 'number'
+          ? Math.round(actualStat.appliedTotal * 10) / 10
+          : null;
+        const projectedPoints = projStat && typeof projStat.appliedTotal === 'number'
+          ? Math.round(projStat.appliedTotal * 10) / 10
+          : 0;
+
+        return {
+          id: player.id || entry.playerId,
+          name: player.fullName || 'Unbekannt',
+          position: positions[player.defaultPositionId] || slots[defensiveSlot] || '-',
+          slot: slots[entry.lineupSlotId] || '-',
+          injury: player.injuryStatus || 'ACTIVE',
+          image: player.id && player.defaultPositionId !== 16 ? `https://a.espncdn.com/i/headshots/nfl/players/full/${player.id}.png` : null,
+          hasPlayed,
+          actualPoints,
+          projectedPoints
+        };
       }),
       teams: data.teams.map((item: any) => ({ id: item.id, name: teamName(item), own: String(item.id) === league.teamId, wins: item.record?.overall?.wins ?? 0, losses: item.record?.overall?.losses ?? 0, points: item.record?.overall?.pointsFor ?? 0 })).sort((first: any, second: any) => second.wins - first.wins || second.points - first.points)
     };

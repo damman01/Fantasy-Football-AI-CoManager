@@ -49,7 +49,7 @@ export class ESPNApiService {
 
   async getDashboard(leagueId: string) {
     const params = new URLSearchParams();
-    for (const view of ['mSettings', 'mTeam', 'mRoster']) params.append('view', view);
+    for (const view of ['mSettings', 'mTeam', 'mRoster', 'mMatchup', 'mMatchupScore']) params.append('view', view);
     const response = await this.axios.get(
       `/seasons/${getCurrentNFLSeasonYear()}/segments/0/leagues/${leagueId}`,
       { params }

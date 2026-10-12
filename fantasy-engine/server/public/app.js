@@ -44,6 +44,19 @@ function renderRoster() {
     wrapper.append(label);
     name.append(wrapper);
     cell(row, player.position);
+
+    // Ist-Punkte
+    const ptsTd = cell(row, '');
+    if (player.hasPlayed) {
+      ptsTd.innerHTML = `<strong class="points-actual">${numberFormat.format(player.actualPoints ?? 0)}</strong><span class="points-tag">Beendet</span>`;
+    } else {
+      ptsTd.innerHTML = `<span class="points-pending">Offen</span>`;
+    }
+
+    // Proj. Punkte
+    cell(row, `${numberFormat.format(player.projectedPoints || 0)} Pkt`, 'points-proj');
+
+    // Status
     const healthy = player.injury === 'ACTIVE' || player.injury === 'NORMAL';
     cell(row, healthy ? 'Verfügbar' : player.injury, healthy ? 'healthy' : 'injured');
     return row;
@@ -142,7 +155,11 @@ function renderWaiverTargets() {
 
     const projNumber = document.createElement('div');
     projNumber.className = 'waiver-proj';
-    projNumber.innerHTML = `<span class="proj-label">PROJ. PKT</span><strong class="proj-value">${numberFormat.format(target.projectedPoints)}</strong>`;
+    if (target.actualPoints && target.actualPoints > 0) {
+      projNumber.innerHTML = `<span class="proj-label">ERZIELT (W${waiverData.week || '-'})</span><strong class="proj-value actual-pts">${numberFormat.format(target.actualPoints)}</strong><span class="proj-sub">Proj: ${numberFormat.format(target.projectedPoints)}</span>`;
+    } else {
+      projNumber.innerHTML = `<span class="proj-label">PROJ. PKT</span><strong class="proj-value">${numberFormat.format(target.projectedPoints)}</strong>`;
+    }
 
     const faabBadge = document.createElement('div');
     faabBadge.className = 'waiver-faab-badge';
@@ -160,7 +177,13 @@ function renderWaiverTargets() {
     prioWrap.className = 'waiver-prio-wrap';
 
     const prioBadge = document.createElement('span');
-    const prioClass = target.priority >= 18 ? 'prio-high' : target.priority >= 12 ? 'prio-med' : 'prio-normal';
+    let prioClass = 'prio-normal';
+    if (target.priorityLabel === 'Höchste Priorität') prioClass = 'prio-highest';
+    else if (target.priorityLabel === 'Hohe Priorität') prioClass = 'prio-high';
+    else if (target.priorityLabel === 'Solider Starter') prioClass = 'prio-med';
+    else if (target.priorityLabel === 'Geheimtipp / Sleeper') prioClass = 'prio-sleeper';
+    else prioClass = 'prio-normal';
+
     prioBadge.className = `prio-pill ${prioClass}`;
     prioBadge.textContent = target.priorityLabel;
     prioWrap.append(prioBadge);
@@ -242,12 +265,146 @@ function renderDropCandidates() {
   }
 }
 
+function renderMarkdown(md) {
+  if (!md || typeof md !== 'string') return '';
+
+  const text = md.replace(/\r\n/g, '\n').trim();
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function formatInline(str) {
+    return str
+      .replace(/\*\*\*([^*]+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
+      .replace(/(^|\s)_([^_\s][^_\n]*?[^_\s])_(\s|[.,;:!?]|$)/g, '$1<em>$2</em>$3')
+      .replace(/`([^`\n]+?)`/g, '<code>$1</code>');
+  }
+
+  const lines = text.split('\n');
+  const htmlParts = [];
+  let inUl = false;
+  let inOl = false;
+
+  function closeLists() {
+    if (inUl) {
+      htmlParts.push('</ul>');
+      inUl = false;
+    }
+    if (inOl) {
+      htmlParts.push('</ol>');
+      inOl = false;
+    }
+  }
+
+  let paragraphBuffer = [];
+
+  function flushParagraph() {
+    if (paragraphBuffer.length > 0) {
+      const pText = paragraphBuffer.map(escapeHtml).map(formatInline).join('<br />');
+      htmlParts.push(`<p class="briefing-p">${pText}</p>`);
+      paragraphBuffer = [];
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (trimmed === '') {
+      flushParagraph();
+      closeLists();
+      continue;
+    }
+
+    // Divider: --- or *** or ___
+    if (/^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushParagraph();
+      closeLists();
+      htmlParts.push('<hr class="briefing-divider" />');
+      continue;
+    }
+
+    // Headings: ###, ##, ####
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      closeLists();
+      const level = headingMatch[1].length;
+      const headingText = formatInline(escapeHtml(headingMatch[2]));
+      const tag = level <= 3 ? 'h4' : 'h5';
+      htmlParts.push(`<${tag} class="briefing-section-title">${headingText}</${tag}>`);
+      continue;
+    }
+
+    // Unordered list item: * item, - item, • item
+    const ulMatch = trimmed.match(/^[-*•]\s+(.*)$/);
+    if (ulMatch) {
+      flushParagraph();
+      if (inOl) closeLists();
+      if (!inUl) {
+        htmlParts.push('<ul class="briefing-list">');
+        inUl = true;
+      }
+      const itemText = formatInline(escapeHtml(ulMatch[1]));
+      htmlParts.push(`<li>${itemText}</li>`);
+      continue;
+    }
+
+    // Ordered list item: 1. item, 2. item
+    const olMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+    if (olMatch) {
+      flushParagraph();
+      if (inUl) closeLists();
+      if (!inOl) {
+        htmlParts.push('<ol class="briefing-list-ordered">');
+        inOl = true;
+      }
+      const itemText = formatInline(escapeHtml(olMatch[2]));
+      htmlParts.push(`<li>${itemText}</li>`);
+      continue;
+    }
+
+    // List item continuation (indented)
+    if ((inUl || inOl) && (rawLine.startsWith('  ') || rawLine.startsWith('\t'))) {
+      const continuationText = formatInline(escapeHtml(trimmed));
+      const lastIndex = htmlParts.length - 1;
+      if (lastIndex >= 0 && htmlParts[lastIndex].endsWith('</li>')) {
+        htmlParts[lastIndex] = htmlParts[lastIndex].replace(/<\/li>$/, ` ${continuationText}</li>`);
+        continue;
+      }
+    }
+
+    closeLists();
+    paragraphBuffer.push(trimmed);
+  }
+
+  flushParagraph();
+  closeLists();
+
+  return htmlParts.join('\n');
+}
+
 function renderWaiverBriefing() {
   if (!waiverData || !waiverData.aiBriefing) return;
   const briefing = waiverData.aiBriefing;
 
   element('waiver-week-badge').textContent = `Woche ${waiverData.week}`;
-  element('waiver-headline').textContent = briefing.headline;
+  
+  // Clean headline of stray markdown tokens
+  const cleanHeadline = (briefing.headline || '')
+    .replace(/^#+\s*/, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .trim();
+  element('waiver-headline').textContent = cleanHeadline;
 
   const urgencyEl = element('waiver-urgency');
   urgencyEl.textContent = briefing.urgency;
@@ -270,23 +427,16 @@ function renderWaiverBriefing() {
     alertsBox.hidden = true;
   }
 
-  // AI Content / Advice
+  // AI Content / Advice - Render full Markdown with fallback
   const contentEl = element('waiver-ai-text');
   contentEl.replaceChildren();
 
-  if (briefing.keyAdvice && briefing.keyAdvice.length > 0) {
-    const list = document.createElement('ul');
-    list.className = 'briefing-list';
-    for (const point of briefing.keyAdvice) {
-      const li = document.createElement('li');
-      li.textContent = point;
-      list.append(li);
-    }
-    contentEl.append(list);
-  } else if (briefing.fullAnalysis) {
-    const p = document.createElement('p');
-    p.textContent = briefing.fullAnalysis;
-    contentEl.append(p);
+  const markdownSource = briefing.fullAnalysis || (Array.isArray(briefing.keyAdvice) && briefing.keyAdvice.length > 0 ? briefing.keyAdvice.map(pt => `- ${pt}`).join('\n') : '');
+
+  if (markdownSource) {
+    contentEl.innerHTML = renderMarkdown(markdownSource);
+  } else {
+    contentEl.innerHTML = '<p class="briefing-p">Keine detaillierte Analyse verfügbar.</p>';
   }
 
   element('waiver-source-tag').textContent = briefing.source === 'gemini' ? 'Gemini 3.7 AI & MCP' : 'MCP Scoring-Modell';
@@ -307,6 +457,7 @@ async function loadWaivers(forceRefresh = false) {
 
   element('waiver-headline').textContent = 'MCP-Analyse wird ausgeführt...';
   element('waiver-urgency').textContent = 'LADEN...';
+  element('waiver-ai-text').innerHTML = '<p class="briefing-p">Analysiere aktuelle Matchup-Ergebnisse, Starter-Leistungen und Waiver Wire...</p>';
 
   try {
     const leagueKey = encodeURIComponent(element('league').value);
@@ -349,6 +500,30 @@ async function loadLeague() {
     element('updated').textContent = `Stand ${new Date(data.updatedAt).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}`;
     element('espn-status').textContent = 'ESPN verbunden';
     element('espn-status').className = 'connected';
+
+    if (data.matchup) {
+      const banner = element('matchup-banner');
+      banner.hidden = false;
+      element('matchup-week-badge').textContent = `Woche ${data.matchup.week}`;
+      element('matchup-my-name').textContent = data.team.name;
+      element('matchup-my-score').textContent = numberFormat.format(data.matchup.teamScore);
+      element('matchup-my-proj').textContent = `Proj: ${numberFormat.format(data.matchup.teamProjected)}`;
+
+      element('matchup-opp-name').textContent = data.matchup.opponentName;
+      element('matchup-opp-score').textContent = numberFormat.format(data.matchup.opponentScore);
+      element('matchup-opp-proj').textContent = `Proj: ${numberFormat.format(data.matchup.opponentProjected)}`;
+
+      const prob = element('matchup-prob-badge');
+      if (data.matchup.winProbability != null) {
+        prob.hidden = false;
+        prob.textContent = `${data.matchup.winProbability}% Sieg-Chance`;
+      } else {
+        prob.hidden = true;
+      }
+    } else {
+      element('matchup-banner').hidden = true;
+    }
+
     roster = data.roster;
     renderRoster();
     element('teams').replaceChildren(...data.teams.map((team, index) => {

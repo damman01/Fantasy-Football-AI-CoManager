@@ -51,6 +51,27 @@
           <div><span>SPIELER</span><strong id="player-count">-</strong></div>
         </div>
       </div>
+
+      <div id="matchup-banner" class="matchup-banner" hidden>
+        <div class="matchup-header">
+          <span class="matchup-title"><i data-lucide="swords"></i> Live Matchup <span id="matchup-week-badge" class="week-pill">Woche -</span></span>
+          <span id="matchup-prob-badge" class="matchup-prob" hidden></span>
+        </div>
+        <div class="matchup-score-row">
+          <div class="matchup-team my-team">
+            <span class="team-label" id="matchup-my-name">Mein Team</span>
+            <strong class="team-score" id="matchup-my-score">0.0</strong>
+            <span class="team-proj" id="matchup-my-proj">Proj: 0.0</span>
+          </div>
+          <div class="matchup-vs">VS</div>
+          <div class="matchup-team opp-team">
+            <span class="team-label" id="matchup-opp-name">Gegner</span>
+            <strong class="team-score" id="matchup-opp-score">0.0</strong>
+            <span class="team-proj" id="matchup-opp-proj">Proj: 0.0</span>
+          </div>
+        </div>
+      </div>
+
       <div class="tabs" role="tablist" aria-label="Teamansicht">
         <button id="roster-tab" role="tab" aria-selected="true" aria-controls="roster-panel">Mein Roster</button>
         <button id="teams-tab" role="tab" aria-selected="false" aria-controls="teams-panel" tabindex="-1">Liga-Tabelle</button>
@@ -70,7 +91,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Slot</th><th>Spieler</th><th>Position</th><th>Status</th></tr>
+              <tr><th>Slot</th><th>Spieler</th><th>Position</th><th>Ist-Punkte</th><th>Proj.</th><th>Status</th></tr>
             </thead>
             <tbody id="roster"></tbody>
           </table>
