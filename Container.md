@@ -1,5 +1,10 @@
 # Container-Leitfaden
 
+Dieser Leitfaden beschreibt das Bauen und Ausführen der Container für das Fantasy Football Co-Manager Dashboard und die Automation CLI.
+Als Container-Runtime kann entweder das neue **WSLC** (*Windows Subsystem for Linux Container CLI*, empfohlen unter Windows) oder **Podman** / Docker verwendet werden.
+
+---
+
 ## 1. Weboberfläche & MCP Server (Standard)
 
 Der Web-Container stellt das vollständige Dashboard bereit:
@@ -11,6 +16,12 @@ Der Web-Container stellt das vollständige Dashboard bereit:
 
 ### Image bauen
 
+#### Mit WSLC (empfohlen):
+```powershell
+wslc build --target runtime-web -t fantasy-comanager:web -f Containerfile .
+```
+
+#### Mit Podman:
 ```powershell
 podman build --target runtime-web -t fantasy-comanager:web -f Containerfile .
 ```
@@ -18,6 +29,12 @@ podman build --target runtime-web -t fantasy-comanager:web -f Containerfile .
 
 ### Container starten
 
+#### Mit WSLC:
+```powershell
+wslc run -d --name fantasy-comanager-web --env-file .env.local -e PORT=3003 -p 3003:3003 fantasy-comanager:web
+```
+
+#### Mit Podman:
 ```powershell
 podman run -d --name fantasy-comanager-web --restart unless-stopped --env-file .env.local -e PORT=3003 -p 127.0.0.1:3003:3003 fantasy-comanager:web
 ```
@@ -26,6 +43,20 @@ Im Browser erreichbar unter: **http://localhost:3003**
 
 ### Logs und Status
 
+#### Mit WSLC:
+```powershell
+# Container-Liste anzeigen
+wslc list
+
+# Live-Logs ansehen
+wslc logs -f fantasy-comanager-web
+
+# Container stoppen und wieder starten
+wslc stop fantasy-comanager-web
+wslc start fantasy-comanager-web
+```
+
+#### Mit Podman:
 ```powershell
 # Live-Logs ansehen
 podman logs -f fantasy-comanager-web
@@ -39,6 +70,14 @@ podman start fantasy-comanager-web
 
 Wurden Einstellungen in `.env.local` (z. B. Team-ID oder Keys) geändert, wird der Container neu erzeugt:
 
+#### Mit WSLC:
+```powershell
+wslc stop fantasy-comanager-web
+wslc rm fantasy-comanager-web
+wslc run -d --name fantasy-comanager-web --env-file .env.local -e PORT=3003 -p 3003:3003 fantasy-comanager:web
+```
+
+#### Mit Podman:
 ```powershell
 podman stop fantasy-comanager-web
 podman rm fantasy-comanager-web
@@ -57,6 +96,12 @@ Für die Ausführung der zeitgesteuerten CLI-Befehle (Scheduled Day Jobs wie `th
 
 ### Image bauen
 
+#### Mit WSLC:
+```powershell
+wslc build --target runtime-automation -t fantasy-comanager:automation -f Containerfile .
+```
+
+#### Mit Podman:
 ```powershell
 podman build --target runtime-automation -t fantasy-comanager:automation -f Containerfile .
 ```
@@ -65,6 +110,19 @@ podman build --target runtime-automation -t fantasy-comanager:automation -f Cont
 
 Der Automation-Container führt den jeweiligen Befehl aus und beendet sich anschliessend:
 
+#### Mit WSLC:
+```powershell
+# Verbindungsprüfung
+wslc run --rm --env-file .env.local fantasy-comanager:automation init
+
+# Verfügbare Befehle anzeigen
+wslc run --rm --env-file .env.local fantasy-comanager:automation --help
+
+# Beispiel: Dienstags-Waiver-Analyse via CLI ausführen
+wslc run --rm --env-file .env.local fantasy-comanager:automation tuesday
+```
+
+#### Mit Podman:
 ```powershell
 # Verbindungsprüfung
 podman run --rm --env-file .env.local fantasy-comanager:automation init
