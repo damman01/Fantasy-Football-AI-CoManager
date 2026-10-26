@@ -137,16 +137,7 @@ export class MCPWaiverService {
     if (weekly && typeof weekly.appliedTotal === 'number') {
       return Math.round(weekly.appliedTotal * 10) / 10;
     }
-    // Fallback: any weekly projection with statSourceId === 1 and reasonable points (< 50)
-    const anyProj = stats.find((s: any) => s.statSourceId === 1 && s.appliedTotal > 0 && s.appliedTotal < 50);
-    if (anyProj && typeof anyProj.appliedTotal === 'number') {
-      return Math.round(anyProj.appliedTotal * 10) / 10;
-    }
-    // Fallback: estimate from season total
-    const seasonProj = stats.find((s: any) => s.statSourceId === 1 && s.appliedTotal > 50);
-    if (seasonProj && typeof seasonProj.appliedTotal === 'number') {
-      return Math.round((seasonProj.appliedTotal / 17) * 10) / 10;
-    }
+    // On BYE weeks or if no projection exists for the week, projection is 0
     return 0;
   }
 

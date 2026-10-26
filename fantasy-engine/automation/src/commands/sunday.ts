@@ -55,9 +55,9 @@ export async function executeSundayCheck(options: SundayOptions): Promise<Sunday
       name: league.name
     })),
     week,
-    prompt: `Perform final lineup review before games start. Focus on late-breaking injury news, 
-             inactive lists, weather updates, and last-minute pivots. Compare with Thursday 
-             recommendations and make only high-confidence changes.`,
+    prompt: `Perform final lineup review before games start. Verify that NO players on BYE remain in the starting lineup.
+             Focus on late-breaking injury news, inactive lists, weather updates, and last-minute pivots. 
+             Compare with Thursday recommendations and make only high-confidence changes.`,
     context: previousAnalysis ? { previousAnalysis: 'thursday_results.json' } : undefined
   });
   

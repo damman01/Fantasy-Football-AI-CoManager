@@ -16,30 +16,30 @@ export interface RosterAnalysis {
   };
 }
 
-export async function getRosterTool(args: { leagueId: string; teamId: string }): Promise<TeamRoster> {
-  const { leagueId, teamId } = args;
+export async function getRosterTool(args: { leagueId: string; teamId: string; week?: number }): Promise<TeamRoster> {
+  const { leagueId, teamId, week } = args;
   
   if (!leagueId || !teamId) {
     throw new Error('League ID and Team ID are required');
   }
   
   try {
-    const roster = await espnApi.getTeamRoster(leagueId, teamId);
+    const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
     return roster;
   } catch (error: any) {
     throw new Error(`Failed to fetch roster: ${error.message}`);
   }
 }
 
-export async function analyzeRosterTool(args: { leagueId: string; teamId: string }): Promise<RosterAnalysis> {
-  const { leagueId, teamId } = args;
+export async function analyzeRosterTool(args: { leagueId: string; teamId: string; week?: number }): Promise<RosterAnalysis> {
+  const { leagueId, teamId, week } = args;
   
   if (!leagueId || !teamId) {
     throw new Error('League ID and Team ID are required');
   }
   
   try {
-    const roster = await espnApi.getTeamRoster(leagueId, teamId);
+    const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
     
     // Analyze roster composition
     const positionCounts: { [key: string]: number } = {};
@@ -54,10 +54,19 @@ export async function analyzeRosterTool(args: { leagueId: string; teamId: string
       totalProjected += player.projectedPoints || 0;
     });
     
+    const byeWeekPlayers = [...roster.starters, ...roster.bench].filter(p => p.isByeWeek);
+    const byeWeekStarters = roster.starters.filter(p => p.isByeWeek);
+
     const strengths: string[] = [];
     const weaknesses: string[] = [];
     const recommendations: string[] = [];
     
+    // Check for bye week issues
+    if (byeWeekStarters.length > 0) {
+      weaknesses.push(`${byeWeekStarters.length} starter(s) currently on BYE: ${byeWeekStarters.map(p => p.fullName).join(', ')}`);
+      recommendations.push(`CRITICAL: Replace ${byeWeekStarters.map(p => p.fullName).join(', ')} in starting lineup (0.0 points on BYE)`);
+    }
+
     // Analyze position depth
     if ((positionCounts['RB'] || 0) >= 5) {
       strengths.push('Strong RB depth');
@@ -78,7 +87,7 @@ export async function analyzeRosterTool(args: { leagueId: string; teamId: string
       recommendations.push('Monitor injury reports closely and have backup plans');
     }
     
-    // Check for handcuffs and bye week issues
+    // Check for handcuffs and lineup adjustments
     const startersProjected = roster.starters.reduce((sum, p) => sum + (p.projectedPoints || 0), 0);
     if (startersProjected < totalProjected * 0.6) {
       recommendations.push('Consider adjusting your starting lineup for better projected output');
@@ -95,7 +104,7 @@ export async function analyzeRosterTool(args: { leagueId: string; teamId: string
         totalProjectedPoints: totalProjected,
         averageProjectedPoints: totalProjected / (roster.starters.length + roster.bench.length),
         injuredPlayers: injuredPlayers.length,
-        byeWeekPlayers: 0 // Would need schedule data to calculate
+        byeWeekPlayers: byeWeekPlayers.length
       }
     };
   } catch (error: any) {

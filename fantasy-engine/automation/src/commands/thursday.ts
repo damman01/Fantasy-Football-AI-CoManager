@@ -85,6 +85,8 @@ export async function executeThursdayOptimization(options: ThursdayOptions): Pro
     })),
     week,
     prompt: `Execute comprehensive AI-powered lineup optimization using all available data sources. 
+             Check for BYE week players and ensure NO player on BYE is in the starting lineup (they earn 0.0 points).
+             If any starter is on BYE, prioritize finding the best bench or waiver replacement.
              Integrate FantasyPros expert consensus, weather data for outdoor games, injury reports, 
              and cross-league strategy coordination. Apply learned patterns from historical performance 
              and focus on high-confidence, data-driven decisions that maximize expected points while managing risk.`

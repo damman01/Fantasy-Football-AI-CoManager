@@ -104,6 +104,7 @@ export async function executeTuesdayWaivers(options: TuesdayOptions): Promise<Tu
     })),
     week,
     prompt: `Execute intelligent Tuesday waiver analysis with cross-league coordination. 
+             Identify bye week fill-ins needed for starters who are on BYE in week ${week}.
              Apply learned patterns from historical waiver success, integrate Monday analysis insights, 
              identify value plays from dropped players, optimize FAAB allocation across leagues, and 
              prepare streaming strategies for upcoming week. Focus on evidence-based decisions with 

@@ -16,6 +16,9 @@ export interface Player {
   injuryStatus?: string;
   percentStarted?: number;
   percentOwned?: number;
+  proTeamId?: number;
+  byeWeek?: number;
+  isByeWeek?: boolean;
 }
 
 export interface TeamRoster {

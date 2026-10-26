@@ -46,8 +46,8 @@ export async function executeAIWorkflow(args: {
     const leagueData = await Promise.all(
       leagues.map(async (league) => {
         try {
-          console.log(`📋 Fetching roster for ${league.name || league.leagueId}...`);
-          const roster = await espnApi.getTeamRoster(league.leagueId, league.teamId);
+          console.log(`📋 Fetching roster for ${league.name || league.leagueId} (week ${week})...`);
+          const roster = await espnApi.getTeamRoster(league.leagueId, league.teamId, week);
           console.log(`📊 Roster fetched - Starters: ${roster.starters?.length || 0}, Bench: ${roster.bench?.length || 0}`);
           const leagueInfo = await espnApi.getLeagueInfo(league.leagueId);
           console.log(`🏈 League info: ${leagueInfo?.name || 'Unknown'}`);
@@ -56,16 +56,24 @@ export async function executeAIWorkflow(args: {
             throw new Error(`Empty roster returned for league ${league.leagueId}, team ${league.teamId}`);
           }
           
-          // Fetch waiver wire data too
+          // Fetch waiver wire data too (with week context)
           const rosterWithWaivers = await getMyRoster({ 
             leagueId: league.leagueId, 
-            teamId: league.teamId 
+            teamId: league.teamId,
+            week
           });
           
           // VALIDATION: Fix weekly projections and IR classification before sending to LLM
           const validateAndFixPlayer = (player: any) => {
-            console.log(`🔍 DEBUG VALIDATION: Processing ${player.fullName || 'Unknown'} - Position: ${player.position || 'Unknown'}, ProjectedPoints: ${player.projectedPoints}`);
+            console.log(`🔍 DEBUG VALIDATION: Processing ${player.fullName || 'Unknown'} - Position: ${player.position || 'Unknown'}, ProjectedPoints: ${player.projectedPoints}, isByeWeek: ${player.isByeWeek}`);
             
+            // If player is on a BYE week, projection must be 0
+            if (player.isByeWeek) {
+              player.projectedPoints = 0;
+              console.log(`⏸️ VALIDATION: ${player.fullName} (${player.position}) is on BYE in week ${week} - projection enforced to 0`);
+              return player;
+            }
+
             // Fix weekly projections - be VERY aggressive about detecting season totals
             if (player.projectedPoints && player.projectedPoints > 0) {
               const position = player.position;
@@ -217,14 +225,24 @@ FANTASY ANALYSIS GUIDELINES:
     const enhancedPrompt = `${prompt}
 
 CURRENT ROSTER DATA:
-${leagueData.map(league => `
-${league.leagueName} (Team Name: ${league.teamName?.replace(/\d/g, (d: string) => ['zero','one','two','three','four','five','six','seven','eight','nine'][parseInt(d)])}):
+${leagueData.map(league => {
+  const byeStarters = league.starters.filter((p: any) => p.isByeWeek);
+  const byeAlert = byeStarters.length > 0 ? `
+🚨 CRITICAL ALERT - STARTER(S) ON BYE WEEK (Week ${week}):
+The following player(s) are currently in your starting lineup but have a BYE this week (0.0 projected points). YOU MUST RECOMMEND BENCHING THEM:
+${byeStarters.map((p: any) => `• ${p.fullName} (${p.position}, ${p.team || 'NFL'}) - ON BYE WEEK (0.0 points)`).join('\n')}
+` : '';
 
+  return `
+${league.leagueName} (Team Name: ${league.teamName?.replace(/\d/g, (d: string) => ['zero','one','two','three','four','five','six','seven','eight','nine'][parseInt(d)])}):
+${byeAlert}
 STARTERS:
 ${league.starters.map((p: any) => {
   // Show both weekly projection and season total
   let projDesc = 'Unknown projection';
-  if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
+  if (p.isByeWeek) {
+    projDesc = '🚨 ON BYE WEEK (zero.zero pts - DO NOT START)';
+  } else if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
     const weeklyPts = p.projectedPoints;
     const seasonPts = (p as any).seasonProjectedPoints;
     
@@ -279,14 +297,17 @@ ${league.starters.map((p: any) => {
     startedDesc = `${category} (${startedInWords} percent)`;
   }
   
-  return `• ${p.fullName} (${p.position}) - ${projDesc} | ${ownedDesc} | ${startedDesc}`;
+  const byeStatus = p.isByeWeek ? ' [ON BYE WEEK]' : (p.byeWeek ? ` [Bye: Wk ${p.byeWeek}]` : '');
+  return `• ${p.fullName} (${p.position}, ${p.team || 'NFL'}${byeStatus}) - ${projDesc} | ${ownedDesc} | ${startedDesc}`;
 }).join('\n') || 'No starters found'}
 
 BENCH:
 ${league.bench.map((p: any) => {
   // Convert ALL projections to words to avoid GitHub secret redaction
   let projDesc = 'Unknown projection';
-  if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
+  if (p.isByeWeek) {
+    projDesc = 'ON BYE WEEK (zero.zero pts)';
+  } else if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
     const pts = p.projectedPoints;
     // Convert the number to words for ALL values
     const ptsInWords = pts.toFixed(1).replace(/\d/g, (d: string) => ['zero','one','two','three','four','five','six','seven','eight','nine'][parseInt(d)]);
@@ -334,14 +355,17 @@ ${league.bench.map((p: any) => {
     startedDesc = `${category} (${startedInWords} percent)`;
   }
   
-  return `• ${p.fullName} (${p.position}) - ${projDesc} | ${ownedDesc} | ${startedDesc}`;
+  const byeStatus = p.isByeWeek ? ' [ON BYE WEEK]' : (p.byeWeek ? ` [Bye: Wk ${p.byeWeek}]` : '');
+  return `• ${p.fullName} (${p.position}, ${p.team || 'NFL'}${byeStatus}) - ${projDesc} | ${ownedDesc} | ${startedDesc}`;
 }).join('\n') || 'No bench players found'}
 
 INJURED RESERVE (IR):
 ${league.injuredReserve && league.injuredReserve.length > 0 ? league.injuredReserve.map((p: any) => {
   // Format IR players similar to bench players
   let projDesc = 'Unknown projection';
-  if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
+  if (p.isByeWeek) {
+    projDesc = 'ON BYE WEEK (zero.zero pts)';
+  } else if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
     const pts = p.projectedPoints;
     const ptsInWords = pts.toFixed(1).replace(/\d/g, (d: string) => ['zero','one','two','three','four','five','six','seven','eight','nine'][parseInt(d)]);
     
@@ -377,7 +401,8 @@ ${league.injuredReserve && league.injuredReserve.length > 0 ? league.injuredRese
     injuryInfo = ` | Injury: ${p.injuryStatus}`;
   }
   
-  return `• ${p.fullName} (${p.position}) - ${projDesc} | ${ownedDesc}${injuryInfo}`;
+  const byeStatus = p.isByeWeek ? ' [ON BYE WEEK]' : (p.byeWeek ? ` [Bye: Wk ${p.byeWeek}]` : '');
+  return `• ${p.fullName} (${p.position}, ${p.team || 'NFL'}${byeStatus}) - ${projDesc} | ${ownedDesc}${injuryInfo}`;
 }).join('\n') : 'No players on injured reserve'}
 
 AVAILABLE WAIVER WIRE/FREE AGENT PLAYERS BY POSITION:
@@ -385,7 +410,9 @@ ${league.availablePlayers ? Object.entries(league.availablePlayers).map(([positi
   `${position}: ${players.length > 0 ? players.map((p: any) => {
     // Format waiver wire players similar to roster players
     let projDesc = 'Unknown projection';
-    if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
+    if (p.isByeWeek) {
+      projDesc = 'ON BYE WEEK (zero.zero pts)';
+    } else if (p.projectedPoints !== undefined && p.projectedPoints !== null) {
       const pts = p.projectedPoints;
       const ptsInWords = pts.toFixed(1).replace(/\d/g, (d: string) => ['zero','one','two','three','four','five','six','seven','eight','nine'][parseInt(d)]);
       
@@ -407,14 +434,22 @@ ${league.availablePlayers ? Object.entries(league.availablePlayers).map(([positi
       ownedDesc = `${ownedInWords}% owned`;
     }
     
-    return `• ${p.fullName} - ${projDesc} | ${ownedDesc}`;
+    const byeStatus = p.isByeWeek ? ' [ON BYE WEEK]' : (p.byeWeek ? ` [Bye: Wk ${p.byeWeek}]` : '');
+    return `• ${p.fullName} (${p.team || 'NFL'}${byeStatus}) - ${projDesc} | ${ownedDesc}`;
   }).join('\n') : 'None available'}`
 ).join('\n') : 'Waiver wire data not available'}
-`).join('\n')}
+`;
+}).join('\n')}
 ${expertDataSection}
 
 CO-MANAGER REVIEW INSTRUCTIONS:
 Review the roster like we're sitting together planning this week's lineup. Go position by position and tell me who to start, who to bench, and who to pick up from waivers. Be direct and decisive.
+
+🚨 **CRITICAL BYE WEEK RULE (NEVER START A PLAYER ON BYE):**
+- Players marked [ON BYE WEEK] or with isByeWeek have NO GAME THIS WEEK and receive 0.0 points.
+- Under NO circumstances may a player on BYE remain in the starting lineup!
+- If ANY starter is on BYE, your HIGHEST PRIORITY is to replace them with an active bench player or recommend a top waiver wire pickup to start instead.
+- If recommending a waiver pickup for a bye week fill-in, clearly specify WHO TO DROP to make room.
 
 **POSITION-BY-POSITION REVIEW:**
 

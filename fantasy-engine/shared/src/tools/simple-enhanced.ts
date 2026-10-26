@@ -1,22 +1,22 @@
 // Minimal roster tool for testing
 import { espnApi } from '../services/espnApi.js';
 
-export async function getMyRoster(args: { leagueId: string; teamId: string }) {
-  const { leagueId, teamId } = args;
+export async function getMyRoster(args: { leagueId: string; teamId: string; week?: number }) {
+  const { leagueId, teamId, week } = args;
   
   if (!leagueId || !teamId) {
     throw new Error('League ID and Team ID are required');
   }
   
-  console.log(`🔍 Fetching roster and waiver wire data for league ${leagueId}, team ${teamId}...`);
+  console.log(`🔍 Fetching roster and waiver wire data for league ${leagueId}, team ${teamId}${week ? ` (week ${week})` : ''}...`);
   
-  // Get current roster
-  const roster = await espnApi.getTeamRoster(leagueId, teamId);
+  // Get current roster with week context
+  const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
   console.log(`✅ Roster fetched: ${roster.starters.length} starters, ${roster.bench.length} bench`);
   
-  // Get available players (waiver wire + free agents)
+  // Get available players (waiver wire + free agents) with week context
   console.log(`🔍 Fetching available players from waiver wire...`);
-  const availablePlayers = await espnApi.getAvailablePlayers(leagueId);
+  const availablePlayers = await espnApi.getAvailablePlayers(leagueId, week);
   console.log(`✅ Available players fetched: ${availablePlayers.length} total`);
   
   // Sort and filter available players by position and relevance

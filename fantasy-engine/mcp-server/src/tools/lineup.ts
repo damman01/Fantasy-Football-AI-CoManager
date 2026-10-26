@@ -31,7 +31,7 @@ export async function optimizeLineupTool(args: {
   }
   
   try {
-    const roster = await espnApi.getTeamRoster(leagueId, teamId);
+    const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
     let allPlayers = [...roster.starters, ...roster.bench];
     
     // Track data sources
@@ -100,7 +100,7 @@ export async function optimizeLineupTool(args: {
       
       const availablePlayers = playersByPosition[position] || [];
       const selectedPlayers = availablePlayers
-        .filter(p => !p.injuryStatus || p.injuryStatus === 'ACTIVE')
+        .filter(p => !p.isByeWeek && (!p.injuryStatus || p.injuryStatus === 'ACTIVE'))
         .slice(0, count);
       
       suggestedLineup.push(...selectedPlayers);
@@ -118,13 +118,14 @@ export async function optimizeLineupTool(args: {
       });
     });
     
-    // Handle FLEX position (best available RB/WR/TE not already starting)
+    // Handle FLEX position (best available RB/WR/TE not already starting and not on BYE)
     const flexCandidates = [
       ...(playersByPosition['RB'] || []).slice(2), // RBs beyond the 2 starters
       ...(playersByPosition['WR'] || []).slice(2), // WRs beyond the 2 starters
       ...(playersByPosition['TE'] || []).slice(1), // TEs beyond the 1 starter
     ].filter(p => 
       !suggestedLineup.some(s => s.id === p.id) && 
+      !p.isByeWeek &&
       (!p.injuryStatus || p.injuryStatus === 'ACTIVE')
     ).sort((a, b) => (b.projectedPoints || 0) - (a.projectedPoints || 0));
     
@@ -145,12 +146,16 @@ export async function optimizeLineupTool(args: {
     // Identify players to bench
     roster.starters.forEach(starter => {
       if (!suggestedLineup.some(s => s.id === starter.id)) {
+        let reason = 'Lower projected points than alternatives';
+        if (starter.isByeWeek) {
+          reason = `On BYE week${starter.byeWeek ? ` (Week ${starter.byeWeek})` : ''} - 0.0 projected points`;
+        } else if (starter.injuryStatus && starter.injuryStatus !== 'ACTIVE') {
+          reason = `Injury status: ${starter.injuryStatus}`;
+        }
         changes.push({
           action: 'bench',
           player: starter,
-          reason: starter.injuryStatus ? 
-            `Injury status: ${starter.injuryStatus}` : 
-            'Lower projected points than alternatives'
+          reason
         });
       }
     });
@@ -180,15 +185,16 @@ export async function getStartSitAdviceTool(args: {
   leagueId: string;
   teamId: string;
   playerName: string;
+  week?: number;
 }): Promise<{ recommendation: 'start' | 'sit'; reasoning: string[] }> {
-  const { leagueId, teamId, playerName } = args;
+  const { leagueId, teamId, playerName, week } = args;
   
   if (!leagueId || !teamId || !playerName) {
     throw new Error('League ID, Team ID, and Player Name are required');
   }
   
   try {
-    const roster = await espnApi.getTeamRoster(leagueId, teamId);
+    const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
     const allPlayers = [...roster.starters, ...roster.bench];
     
     // Find the player in question
@@ -199,6 +205,16 @@ export async function getStartSitAdviceTool(args: {
     
     if (!player) {
       throw new Error(`Player "${playerName}" not found on roster`);
+    }
+
+    // Immediately handle BYE weeks
+    if (player.isByeWeek) {
+      return {
+        recommendation: 'sit',
+        reasoning: [
+          `Player is on BYE week${player.byeWeek ? ` (Week ${player.byeWeek})` : ''} with 0 projected points - DO NOT START`
+        ]
+      };
     }
     
     const reasoning: string[] = [];

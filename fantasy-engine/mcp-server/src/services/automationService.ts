@@ -39,12 +39,12 @@ export class AutomationService {
   async generateWeeklyReport(leagueId: string, teamId: string, week: number): Promise<AutomationReport> {
     console.log(`🔄 Generating automation report for Week ${week}`);
 
-    // Get current roster
-    const roster = await espnApi.getTeamRoster(leagueId, teamId);
+    // Get current roster with week context
+    const roster = await espnApi.getTeamRoster(leagueId, teamId, week);
     const allPlayers = [...roster.starters, ...roster.bench];
 
-    // Get available players for waiver analysis
-    const availablePlayers = await espnApi.getAvailablePlayers(leagueId);
+    // Get available players for waiver analysis with week context
+    const availablePlayers = await espnApi.getAvailablePlayers(leagueId, week);
 
     // Generate lineup decisions
     const lineupChanges = await this.optimizeLineup(allPlayers);
@@ -99,7 +99,11 @@ export class AutomationService {
         let confidence: number;
         let reasoning: string;
 
-        if (index === 0 && score > this.MIN_PROJECTION_THRESHOLD) {
+        if (player.isByeWeek) {
+          action = 'bench';
+          confidence = 99;
+          reasoning = `Player is on BYE week${player.byeWeek ? ` (Week ${player.byeWeek})` : ''} - 0.0 points`;
+        } else if (index === 0 && score > this.MIN_PROJECTION_THRESHOLD) {
           action = 'start';
           confidence = Math.min(95, 70 + (score - this.MIN_PROJECTION_THRESHOLD) * 5);
           reasoning = `Highest projected points (${player.projectedPoints}) in ${position} group`;
@@ -173,6 +177,10 @@ export class AutomationService {
   }
 
   private calculatePlayerScore(player: Player): number {
+    if (player.isByeWeek) {
+      return 0;
+    }
+
     let score = player.projectedPoints ?? 0;
     
     // Injury penalty
@@ -189,6 +197,10 @@ export class AutomationService {
   }
 
   private assessPlayerRisk(player: Player): 'low' | 'medium' | 'high' {
+    if (player.isByeWeek) {
+      return 'high';
+    }
+
     if (player.injuryStatus === 'OUT' || player.injuryStatus === 'DOUBTFUL') {
       return 'high';
     }
@@ -222,6 +234,9 @@ export class AutomationService {
   }
 
   private assessRosterRisk(starters: Player[]): string {
+    const byeCount = starters.filter(player => player.isByeWeek).length;
+    if (byeCount > 0) return `CRITICAL Risk - ${byeCount} starter(s) on BYE week`;
+
     const highRiskCount = starters.filter(player => 
       this.assessPlayerRisk(player) === 'high'
     ).length;
